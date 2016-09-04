@@ -21,12 +21,16 @@ func (master *Master) schedule(task *Task, proc string, filePathChan chan string
 	)
 
 	log.Printf("Scheduling %v operations\n", proc)
-
+    
+    master.filePathChan = filePathChan // Set master file path channel; used in runOperation() when some error occurs (see (*) below);
+    master.pendingOperations = make(map[string]*Operation, 0)
+    
 	counter = 0
 	for filePath = range filePathChan {
-		operation = &Operation{proc, counter, filePath}
-		counter++
-
+        if operation = master.pendingOperations[filePath]; operation==nil { // (**) Verify if its a reprocessing operation;
+            operation = &Operation{proc, counter, filePath}
+            counter++
+        }
 		worker = <-master.idleWorkerChan
 		wg.Add(1)
 		go master.runOperation(worker, operation, &wg)
@@ -57,6 +61,8 @@ func (master *Master) runOperation(remoteWorker *RemoteWorker, operation *Operat
 	if err != nil {
 		log.Printf("Operation %v '%v' Failed. Error: %v\n", operation.proc, operation.id, err)
 		wg.Done()
+        master.pendingOperations[operation.filePath] = operation // Store current filePath operation for further reprocessing; used in schedule() (see (**) above);
+        master.filePathChan <- operation.filePath // (*) Re-schedule current filePath;
 		master.failedWorkerChan <- remoteWorker
 	} else {
 		wg.Done()
