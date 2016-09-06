@@ -2,7 +2,6 @@ package mapreduce
 
 import (
 	"log"
-	"sync"
 )
 
 // Schedules map operations on remote workers. This will run until InputFilePathChan
@@ -11,39 +10,40 @@ func (master *Master) schedule(task *Task, proc string, filePathChan chan string
 	//////////////////////////////////
 	// YOU WANT TO MODIFY THIS CODE //
 	//////////////////////////////////
-
-	var (
-		wg        sync.WaitGroup
-		filePath  string
-		worker    *RemoteWorker
-		operation *Operation
-		counter   int
-	)
+    
+    var (
+        filePath string
+    )
 
 	log.Printf("Scheduling %v operations\n", proc)
     
-    master.filePathChan = filePathChan // Set master file path channel; used in runOperation() when some error occurs (see (*) below);
-    master.pendingOperations = make(map[string]*Operation, 0)
+    master.failedOperationsChan = make(chan *Operation)
+    master.hasNewFiles = true
     
-	counter = 0
-	for filePath = range filePathChan {
-        if operation = master.pendingOperations[filePath]; operation==nil { // (**) Verify if its a reprocessing operation;
-            operation = &Operation{proc, counter, filePath}
-            counter++
+    counter := 0
+    for master.hasNewFiles || master.pendingOperationsCounter>0 {
+        select {
+            case filePath, master.hasNewFiles = <- filePathChan: // If filePathChan is open, master.hasNewFiles==true;
+            if !master.hasNewFiles {
+                filePathChan = nil // "Inactivate" filePathChan in the channel selector; this will cause filePathChan to be ignored in the select loop;
+            } else {
+                master.addToPendingOperationsCounter(1) // Increment master.pendingOperationsCounter;
+                go master.runOperation(<-master.idleWorkerChan, &Operation{proc, counter, filePath})
+                counter++
+            }
+            case operation, failedOperationsChannelOpen := <- master.failedOperationsChan:
+            if failedOperationsChannelOpen {
+                go master.runOperation(<-master.idleWorkerChan, operation)
+            }
         }
-		worker = <-master.idleWorkerChan
-		wg.Add(1)
-		go master.runOperation(worker, operation, &wg)
-	}
-
-	wg.Wait()
-
-	log.Printf("%vx %v operations completed\n", counter, proc)
+    }
+    
+    log.Printf("%vx %v operations completed\n", counter, proc)
 	return counter
 }
 
 // runOperation start a single operation on a RemoteWorker and wait for it to return or fail.
-func (master *Master) runOperation(remoteWorker *RemoteWorker, operation *Operation, wg *sync.WaitGroup) {
+func (master *Master) runOperation(remoteWorker *RemoteWorker, operation *Operation) {
 	//////////////////////////////////
 	// YOU WANT TO MODIFY THIS CODE //
 	//////////////////////////////////
@@ -56,16 +56,27 @@ func (master *Master) runOperation(remoteWorker *RemoteWorker, operation *Operat
 	log.Printf("Running %v (ID: '%v' File: '%v' Worker: '%v')\n", operation.proc, operation.id, operation.filePath, remoteWorker.id)
 
 	args = &RunArgs{operation.id, operation.filePath}
-	err = remoteWorker.callRemoteWorker(operation.proc, args, new(struct{}))
+    err = remoteWorker.callRemoteWorker(operation.proc, args, new(struct{}))
 
 	if err != nil {
 		log.Printf("Operation %v '%v' Failed. Error: %v\n", operation.proc, operation.id, err)
-		wg.Done()
-        master.pendingOperations[operation.filePath] = operation // Store current filePath operation for further reprocessing; used in schedule() (see (**) above);
-        master.filePathChan <- operation.filePath // (*) Re-schedule current filePath;
+        master.failedOperationsChan <- operation // (*) Re-schedule current operation for further reprocessing;
 		master.failedWorkerChan <- remoteWorker
 	} else {
-		wg.Done()
-		master.idleWorkerChan <- remoteWorker
+        master.addToPendingOperationsCounter(-1) // Decrement master.pendingOperationsCounter;
+        master.idleWorkerChan <- remoteWorker
 	}
+}
+
+func (master *Master) addToPendingOperationsCounter(amount int) {
+    master.pendingOperationsCounterMutex.Lock()
+    master.pendingOperationsCounter = master.pendingOperationsCounter + amount
+    master.checkFailedOperationsChannelClosing()
+    master.pendingOperationsCounterMutex.Unlock()
+}
+
+func (master *Master) checkFailedOperationsChannelClosing() {
+    if !master.hasNewFiles && master.pendingOperationsCounter==0 { // No more failed operations to run since filePathChan doesn't have new files;
+        close(master.failedOperationsChan) // This must be executed inside de mutex block to avoid simultaneous close calls on master.failedOperationsChan;
+    }
 }

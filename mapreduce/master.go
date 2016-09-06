@@ -33,8 +33,10 @@ type Master struct {
 	// ADD EXTRA PROPERTIES HERE //
 	///////////////////////////////
 	// Fault Tolerance
-    filePathChan chan string
-    pendingOperations map[string]*Operation // Map key (string) is the operation file path;
+    failedOperationsChan chan *Operation
+    hasNewFiles bool
+    pendingOperationsCounter int
+    pendingOperationsCounterMutex sync.Mutex
 }
 
 type Operation struct {
@@ -83,8 +85,8 @@ func (master *Master) handleFailingWorkers() {
 	// YOUR CODE GOES HERE //
 	/////////////////////////
     for failedWorker := range master.failedWorkerChan {
-        master.workersMutex.Lock()
         log.Printf("Removing worker %v from master list.\n", failedWorker.id)
+        master.workersMutex.Lock()
         delete(master.workers, failedWorker.id)
         master.workersMutex.Unlock()
     }
