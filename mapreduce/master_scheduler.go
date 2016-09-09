@@ -17,7 +17,7 @@ func (master *Master) schedule(task *Task, proc string, filePathChan chan string
 
 	log.Printf("Scheduling %v operations\n", proc)
     
-    master.failedOperationsChan = make(chan *Operation)
+    master.failedOperationsChan = make(chan *Operation, 100)
     master.hasNewFiles = true
     
     counter := 0
