@@ -32,11 +32,6 @@ type Master struct {
 	///////////////////////////////
 	// ADD EXTRA PROPERTIES HERE //
 	///////////////////////////////
-	// Fault Tolerance
-    failedOperationsChan chan *Operation
-    hasNewFiles bool
-    pendingOperationsCounter int
-    pendingOperationsCounterMutex sync.Mutex
 }
 
 type Operation struct {
